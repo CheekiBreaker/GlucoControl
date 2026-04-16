@@ -1,0 +1,232 @@
+/*
+  # Blood Sugar Tracker - Initial Schema
+
+  ## Overview
+  This migration creates the complete database schema for the blood sugar monitoring
+  and nutrition tracking application.
+
+  ## New Tables
+
+  ### 1. `glucose_readings`
+  Stores blood glucose measurements logged by users.
+  - `id` (uuid, PK) - unique identifier
+  - `user_id` (uuid) - reference to auth.users
+  - `value` (numeric) - glucose level in mmol/L
+  - `measured_at` (timestamptz) - when measurement was taken
+  - `meal_context` (text) - before_meal, after_meal, fasting, bedtime, other
+  - `notes` (text) - optional user notes
+  - `created_at` (timestamptz)
+
+  ### 2. `foods`
+  Nutritional database of food items.
+  - `id` (uuid, PK)
+  - `name` (text) - food name in Russian
+  - `category` (text) - food category
+  - `calories` (numeric) - per 100g
+  - `proteins` (numeric) - proteins per 100g
+  - `fats` (numeric) - fats per 100g
+  - `carbs` (numeric) - carbohydrates per 100g
+  - `bread_units` (numeric) - bread units per 100g (XE)
+  - `glycemic_index` (integer) - glycemic index
+  - `is_system` (boolean) - system-provided vs user-added
+  - `user_id` (uuid) - null for system foods
+
+  ### 3. `meals`
+  Planned or logged meals for menu tracking.
+  - `id` (uuid, PK)
+  - `user_id` (uuid)
+  - `name` (text) - meal name
+  - `meal_type` (text) - breakfast, lunch, dinner, snack
+  - `planned_date` (date) - date of the meal
+  - `created_at` (timestamptz)
+
+  ### 4. `meal_items`
+  Individual food items within a meal.
+  - `id` (uuid, PK)
+  - `meal_id` (uuid, FK -> meals)
+  - `food_id` (uuid, FK -> foods)
+  - `quantity` (numeric) - quantity in grams
+  - `created_at` (timestamptz)
+
+  ## Security
+  - RLS enabled on all tables
+  - Users can only access their own data
+  - System foods are readable by all authenticated users
+*/
+
+-- Glucose Readings Table
+CREATE TABLE IF NOT EXISTS glucose_readings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  value numeric(5,2) NOT NULL,
+  measured_at timestamptz NOT NULL DEFAULT now(),
+  meal_context text NOT NULL DEFAULT 'other',
+  notes text DEFAULT '',
+  created_at timestamptz DEFAULT now()
+);
+
+ALTER TABLE glucose_readings ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own glucose readings"
+  ON glucose_readings FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own glucose readings"
+  ON glucose_readings FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update own glucose readings"
+  ON glucose_readings FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete own glucose readings"
+  ON glucose_readings FOR DELETE
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+-- Foods Table
+CREATE TABLE IF NOT EXISTS foods (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  category text NOT NULL DEFAULT 'Другое',
+  calories numeric(7,2) NOT NULL DEFAULT 0,
+  proteins numeric(6,2) NOT NULL DEFAULT 0,
+  fats numeric(6,2) NOT NULL DEFAULT 0,
+  carbs numeric(6,2) NOT NULL DEFAULT 0,
+  bread_units numeric(5,2) GENERATED ALWAYS AS (carbs / 12.0) STORED,
+  glycemic_index integer DEFAULT 0,
+  is_system boolean NOT NULL DEFAULT false,
+  user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
+  created_at timestamptz DEFAULT now()
+);
+
+ALTER TABLE foods ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Anyone can view system foods"
+  ON foods FOR SELECT
+  TO authenticated
+  USING (is_system = true OR auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own foods"
+  ON foods FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id AND is_system = false);
+
+CREATE POLICY "Users can update own foods"
+  ON foods FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = user_id AND is_system = false)
+  WITH CHECK (auth.uid() = user_id AND is_system = false);
+
+CREATE POLICY "Users can delete own foods"
+  ON foods FOR DELETE
+  TO authenticated
+  USING (auth.uid() = user_id AND is_system = false);
+
+-- Meals Table
+CREATE TABLE IF NOT EXISTS meals (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  name text NOT NULL DEFAULT '',
+  meal_type text NOT NULL DEFAULT 'breakfast',
+  planned_date date NOT NULL DEFAULT CURRENT_DATE,
+  created_at timestamptz DEFAULT now()
+);
+
+ALTER TABLE meals ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own meals"
+  ON meals FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own meals"
+  ON meals FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update own meals"
+  ON meals FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete own meals"
+  ON meals FOR DELETE
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+-- Meal Items Table
+CREATE TABLE IF NOT EXISTS meal_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  meal_id uuid REFERENCES meals(id) ON DELETE CASCADE NOT NULL,
+  food_id uuid REFERENCES foods(id) ON DELETE CASCADE NOT NULL,
+  quantity numeric(7,2) NOT NULL DEFAULT 100,
+  created_at timestamptz DEFAULT now()
+);
+
+ALTER TABLE meal_items ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own meal items"
+  ON meal_items FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM meals
+      WHERE meals.id = meal_items.meal_id
+      AND meals.user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can insert own meal items"
+  ON meal_items FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM meals
+      WHERE meals.id = meal_items.meal_id
+      AND meals.user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can update own meal items"
+  ON meal_items FOR UPDATE
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM meals
+      WHERE meals.id = meal_items.meal_id
+      AND meals.user_id = auth.uid()
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM meals
+      WHERE meals.id = meal_items.meal_id
+      AND meals.user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can delete own meal items"
+  ON meal_items FOR DELETE
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM meals
+      WHERE meals.id = meal_items.meal_id
+      AND meals.user_id = auth.uid()
+    )
+  );
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_glucose_readings_user_id ON glucose_readings(user_id);
+CREATE INDEX IF NOT EXISTS idx_glucose_readings_measured_at ON glucose_readings(measured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_foods_category ON foods(category);
+CREATE INDEX IF NOT EXISTS idx_foods_is_system ON foods(is_system);
+CREATE INDEX IF NOT EXISTS idx_meals_user_id ON meals(user_id);
+CREATE INDEX IF NOT EXISTS idx_meals_planned_date ON meals(planned_date);
+CREATE INDEX IF NOT EXISTS idx_meal_items_meal_id ON meal_items(meal_id);
